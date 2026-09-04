@@ -84,9 +84,18 @@ jobs:
             -e SOJU_WEB_ADMIN_PASSWORD=ci-password-123456 \
             -e SOJU_WEB_SESSION_SECRET=ci-session-secret-01234567890123456789 \
             soju-web:ci-arm64)
-          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-          sleep 2
-          docker ps --filter "id=$cid" --format '{{.ID}}' | grep -q .
-          docker logs "$cid" 2>&1 | grep -q "soju-web listening"
+          trap 'docker logs "$cid" 2>&1 || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          started=false
+          for i in $(seq 1 20); do
+            if ! docker ps --filter "id=$cid" --format '{{.ID}}' | grep -q .; then
+              break
+            fi
+            if docker logs "$cid" 2>&1 | grep -q "soju-web listening"; then
+              started=true
+              break
+            fi
+            sleep 1
+          done
+          test "$started" = true
           docker rm -f "$cid"
           trap - EXIT
