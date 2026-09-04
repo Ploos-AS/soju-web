@@ -4,13 +4,13 @@ import "testing"
 
 func TestValidNetworkAddress(t *testing.T) {
 	tests := map[string]bool{
-		"irc.libera.chat":              true,
-		"irc.libera.chat:6697":         true,
-		"ircs://irc.libera.chat:6697":  true,
+		"irc.libera.chat":               true,
+		"irc.libera.chat:6697":          true,
+		"ircs://irc.libera.chat:6697":   true,
 		"irc+insecure://localhost:6667": true,
-		"http://example.com":           false,
-		"":                             false,
-		"bad host name":                false,
+		"http://example.com":            false,
+		"":                              false,
+		"bad host name":                 false,
 		"irc.libera.chat\nBOGUS":        false,
 	}
 	for input, want := range tests {
