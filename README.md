@@ -6,18 +6,20 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added user administration. M2 adds per-user IRC network administration through soju's native Unix admin interface:
+M0 established the hardened WebAdmin foundation. M1 added user administration, M2 added per-user IRC network administration, and M3 adds saved-channel/autojoin administration through soju's native Unix admin interface:
 
 - authenticated WebAdmin login
 - dashboard with soju backend reachability and TCP latency
 - `/users` administration page
 - user status, creation, enable/disable, admin role and password changes
 - `/networks` administration page scoped to a selected soju user
-- network status via `user run <user> network status`
-- create networks with address, name, nick, IRC username, real name and enabled state
-- update network address and identity fields
-- enable/disable networks
-- delete networks with explicit confirmation
+- network status, create, update, enable/disable and delete
+- `/channels` administration page scoped to a selected user and network
+- channel status via `user run <user> channel status -network <network>`
+- create saved channels/autojoin entries
+- update detached state and detach/reattach filters
+- configure detach-after durations
+- delete saved channels with explicit confirmation
 - CSRF protection for administrative POST actions
 - health endpoint at `/healthz`
 - pure-Go application with no runtime framework dependencies
@@ -30,7 +32,7 @@ IRC chat remains intentionally out of scope. `soju-web` also does not mount the 
 
 ## soju admin socket
 
-M1 and M2 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M3 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
 Add this listener to the soju configuration:
 
@@ -71,6 +73,18 @@ When a URL scheme is supplied, M2 accepts `ircs://` and `irc+insecure://`. Plain
 
 Network administration is always executed in the selected user's context using soju's `user run` command. The web application does not impersonate users through database changes.
 
+## Channel administration
+
+M3 targets a selected user and network. Status uses soju's `-network` selector. Create, update and delete use soju's native global-context target syntax, for example:
+
+```text
+#soju/Libera
+```
+
+The WebAdmin exposes soju's saved-channel settings for detached state, relay-detached, reattach-on, detach-on and detach-after. Supported filter values are `default`, `none`, `highlight` and `message`; durations follow Go/soju duration syntax such as `300s` or `22h30m`.
+
+Creating a saved channel causes soju to join it when the selected network is connected. Deleting it removes the saved channel and parts it when currently joined, following upstream behavior.
+
 ## Quick start
 
 ```bash
@@ -106,7 +120,7 @@ For production, terminate HTTPS at a reverse proxy and set `SOJU_WEB_COOKIE_SECU
 
 The container runs as UID/GID 1000, drops all Linux capabilities, supports a read-only root filesystem and needs no Docker socket. The login cookie is HTTP-only, SameSite=Strict and HMAC-authenticated. Administrative forms carry HMAC-backed CSRF tokens. Security headers include CSP, frame denial, no-sniff and no-referrer policy.
 
-The admin socket is powerful by design. Mount only the soju runtime directory needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network deletion requires both an authenticated session, a valid CSRF token and an explicit `delete` confirmation value.
+The admin socket is powerful by design. Mount only the soju runtime directory needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network and channel deletion requires both an authenticated session, a valid CSRF token and an explicit `delete` confirmation value.
 
 ## Development
 
