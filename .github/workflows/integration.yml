@@ -1,0 +1,85 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  soju-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out soju-web
+        uses: actions/checkout@v4
+
+      - name: Check out Ploos-AS soju packaging
+        uses: actions/checkout@v4
+        with:
+          repository: Ploos-AS/soju
+          path: upstream-soju
+
+      - name: Build soju
+        run: docker build -t soju:integration upstream-soju
+
+      - name: Build soju-web
+        run: docker build -t soju-web:integration .
+
+      - name: Qualify shared admin socket end-to-end
+        run: |
+          set -eu
+          docker network create soju-integration
+          docker volume create soju-runtime-integration
+          docker volume create soju-data-integration
+          trap 'docker rm -f soju-web-integration soju-integration >/dev/null 2>&1 || true; docker network rm soju-integration >/dev/null 2>&1 || true; docker volume rm soju-runtime-integration soju-data-integration >/dev/null 2>&1 || true' EXIT
+
+          printf '%s\n' 'integration-user-password-123456' | docker run --rm -i \
+            -v soju-data-integration:/var/lib/soju \
+            --entrypoint /usr/local/bin/sojudb \
+            soju:integration \
+            -config /etc/soju/config create-user integration-admin -admin
+
+          docker run -d --name soju-integration \
+            --network soju-integration \
+            -v soju-data-integration:/var/lib/soju \
+            -v soju-runtime-integration:/run/soju \
+            soju:integration
+
+          for i in $(seq 1 30); do
+            if docker exec soju-integration test -S /run/soju/admin; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec soju-integration test -S /run/soju/admin
+
+          docker run -d --name soju-web-integration \
+            --network soju-integration \
+            -p 127.0.0.1:18080:8080 \
+            -e SOJU_WEB_ADMIN_USER=webadmin \
+            -e SOJU_WEB_ADMIN_PASSWORD=integration-web-password-123456 \
+            -e SOJU_WEB_SESSION_SECRET=integration-session-secret-01234567890123456789 \
+            -e SOJU_ADDRESS=soju-integration:6667 \
+            -e SOJU_ADMIN_SOCKET=/run/soju/admin \
+            -v soju-runtime-integration:/run/soju:ro \
+            soju-web:integration
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz | grep -qx ok; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz | grep -qx ok
+
+          curl -fsS -c cookies.txt \
+            -d 'username=webadmin' \
+            -d 'password=integration-web-password-123456' \
+            http://127.0.0.1:18080/login >/dev/null
+
+          dashboard=$(curl -fsS -b cookies.txt http://127.0.0.1:18080/)
+          printf '%s' "$dashboard" | grep -q 'Admin socket'
+          printf '%s' "$dashboard" | grep -q '>online<'
+          printf '%s' "$dashboard" | grep -q 'integration-admin'
