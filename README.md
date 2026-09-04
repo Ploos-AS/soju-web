@@ -6,7 +6,7 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, M5 operational observability, M6 structured status views, and M7 adds contextual drill-down navigation:
+M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, M5 operational observability, M6 structured status views, M7 contextual drill-down navigation, M8 inline management, M9 native user deletion, and M10 adds release hardening and real soju integration qualification.
 
 - authenticated WebAdmin login
 - dashboard health for the IRC listener and Unix admin socket
@@ -16,56 +16,53 @@ M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3
 - disabled-user and administrator counts
 - operational `Attention needed` warnings derived from soju's own status data
 - embedded soju-web build version and Git revision in the dashboard and startup log
-- structured Users table with role, enabled/disabled state, network count and network limit
-- structured Networks table with address, connected/disabled/disconnected badges, active nick and upstream detail/error
-- structured Channels table with joined/parted/disconnected and attached/detached state
+- structured Users, Networks and Channels tables
 - contextual drill-down from Users to Networks, and from Networks to Channels or Security
-- back-links between Channels/Security and the selected user's Networks page
-- URL-escaped user/network context so drill-down does not require manually re-entering targets
-- `/users` administration: status, create, enable/disable, admin role and password changes
+- inline Manage actions that prefill the selected user/network/channel target
+- `/users` administration: status, create, enable/disable, admin role, password changes and native token-confirmed deletion
 - `/networks` administration: status, create, update, enable/disable and delete
 - `/channels` administration: saved-channel/autojoin status, create, update and delete
 - detached-channel policy: relay-detached, reattach-on, detach-on and detach-after
 - `/security` administration scoped to a selected user and network
 - SASL PLAIN status, credential setup and reset
 - CertFP status and certificate generation with Ed25519, ECDSA or RSA-3072
+- explicit confirmation before credential reset, CertFP generation and destructive deletes
 - CSRF protection for administrative POST actions
 - health endpoint at `/healthz`
 - pure-Go application with no runtime framework dependencies
 - non-root, read-only Alpine container
-- Docker Compose example
+- Docker Compose example using a shared named runtime volume
 - amd64 and arm64 CI/release pipeline
+- end-to-end CI against a real Ploos-AS soju build and Unix admin socket
 - GHCR publication with SBOM, provenance and build attestation
 
 IRC chat remains intentionally out of scope. `soju-web` does not mount the Docker socket and does not modify the soju database directly.
 
 ## soju admin socket
 
-M1-M7 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M10 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
-Add this listener to the soju configuration:
+The current `Ploos-AS/soju` packaging enables:
 
 ```text
 listen unix+admin:///run/soju/admin
 ```
 
-The soju and soju-web containers must share the runtime directory containing that socket. With the Ploos-AS images, both containers run as UID/GID 1000, so a shared host directory is a simple deployment model.
+The reference Compose files in both repositories use the same explicitly named Docker volume:
 
-Example soju volume:
-
-```yaml
-volumes:
-  - ./run/soju:/run/soju
+```text
+soju-runtime
 ```
 
-The soju-web Compose example mounts the same directory read-only:
+soju mounts it read-write at `/run/soju`; soju-web mounts the same volume read-only. This works even when the two Compose projects live in different directories.
 
-```yaml
-volumes:
-  - ./run/soju:/run/soju:ro
+Override the shared volume name in both projects when needed:
+
+```text
+SOJU_RUNTIME_VOLUME=<name>
 ```
 
-If the projects live in different directories, set `SOJU_RUNTIME_DIR` in the soju-web `.env` to the same absolute host directory used by soju.
+The admin socket is never exposed as a TCP port.
 
 ## Dashboard
 
@@ -87,28 +84,33 @@ stored networks
 stored channels
 ```
 
-M5 also derives a small `Attention needed` section. Examples include an unreachable IRC listener/admin socket, stored users that are not currently active, configured networks without a live upstream connection, and disabled user accounts. The configured-network warning explicitly includes disabled networks; soju reports those as stored networks without an upstream connection.
+M5 derives a small `Attention needed` section. Examples include an unreachable IRC listener/admin socket, stored users that are not currently active, configured networks without a live upstream connection, and disabled user accounts. The configured-network warning explicitly includes disabled networks; soju reports those as stored networks without an upstream connection.
 
-## Structured status views
+## Structured status and drill-down
 
-M6 parses the stable human-readable status produced by the pinned soju admin commands into WebAdmin view models. The original command output is not used as the primary presentation anymore.
+M6 parses the stable human-readable status produced by the pinned soju admin commands into WebAdmin view models. Users show username, administrator role, enabled/disabled state, configured network count and optional network limit. Networks show configured address, connected/disabled/disconnected state, connected nick and upstream detail/error. Channels show joined/parted/disconnected state plus detached status.
 
-Users show username, administrator role, enabled/disabled state, configured network count and optional network limit. Networks show configured address, connected/disabled/disconnected state, connected nick when soju reports one, channel count for connected networks, and the last connection error/detail for disconnected networks. Channels show joined/parted/disconnected state plus detached status.
-
-The parsers are covered by focused tests using representative upstream status lines. If a future soju release changes the status format, the parser tests are expected to catch the compatibility change rather than silently inventing state.
-
-## Drill-down navigation
-
-M7 turns the structured tables into the primary navigation path:
+M7-M8 make these tables the primary management path:
 
 ```text
 Users → Networks → Channels
                  ↘ Security
 ```
 
-Selecting a user on the Users page opens that user's Networks page directly. Each network row has direct actions for Channels and Security. Both target pages retain the selected user/network in their URLs and provide contextual links back to Networks and across to the sibling page.
+Manage links retain user/network/channel context with Go's `net/url` escaping and prefill the corresponding edit forms.
 
-Navigation URLs are built with Go's `net/url` package and covered by tests, so user and network names are safely escaped instead of being concatenated into query strings manually.
+## User deletion
+
+M9 follows soju's native two-step confirmation protocol instead of bypassing it.
+
+The WebAdmin first asks soju for the deletion token using `user delete <username>`. That call does not delete the account. The final POST requires:
+
+- an authenticated WebAdmin session
+- a valid CSRF token
+- the token returned by soju for that username
+- the exact typed phrase `delete <username>`
+
+Only then does soju-web send `user delete <username> <token>` to the admin socket.
 
 ## Network addresses
 
@@ -139,15 +141,17 @@ The WebAdmin exposes soju's saved-channel settings for detached state, relay-det
 
 M4 exposes soju's native network authentication commands. SASL PLAIN credentials are sent over the local Unix admin socket directly to soju and are never stored by soju-web. Reset requires an explicit `reset` confirmation.
 
-CertFP generation uses soju itself to generate and store the certificate/key pair for the selected network. The UI offers Ed25519 by default, ECDSA, and RSA-3072.
+CertFP generation uses soju itself to generate and store the certificate/key pair for the selected network. The UI offers Ed25519 by default, ECDSA, and RSA-3072. Because generating a certificate changes the selected network to SASL EXTERNAL and replaces its existing SASL credential material, M10 additionally requires the operator to type `generate` before this action is submitted.
 
 ## Quick start
+
+Start the current `Ploos-AS/soju` Compose deployment first so the shared runtime volume and admin socket exist. Then in this repository:
 
 ```bash
 cp .env.example .env
 ```
 
-Set strong values for `SOJU_WEB_ADMIN_PASSWORD` and `SOJU_WEB_SESSION_SECRET`, configure the shared soju runtime directory, then start:
+Set strong values for `SOJU_WEB_ADMIN_PASSWORD` and `SOJU_WEB_SESSION_SECRET`, then start:
 
 ```bash
 docker compose up -d
@@ -155,7 +159,7 @@ docker compose up -d
 
 Open `http://HOST:8080/`.
 
-The Compose example reaches an already-published soju IRC listener through `host.docker.internal:6667` using Docker's Linux `host-gateway`. If both containers share a Docker network, set `SOJU_ADDRESS` to the soju service name instead, for example `soju:6667`.
+The default Compose example reaches the host-published soju IRC listener through `host.docker.internal:6667` using Docker's Linux `host-gateway`, while administrative traffic stays on the shared `soju-runtime` Unix socket. If both containers share a Docker network, set `SOJU_ADDRESS` to the soju service name instead, for example `soju:6667`.
 
 ## Configuration
 
@@ -168,7 +172,7 @@ The Compose example reaches an already-published soju IRC listener through `host
 | `SOJU_WEB_COOKIE_SECURE` | `false` | `false` | Set `true` when served over HTTPS |
 | `SOJU_ADDRESS` | `soju:6667` | `host.docker.internal:6667` | soju TCP endpoint used for dashboard reachability |
 | `SOJU_ADMIN_SOCKET` | `/run/soju/admin` | `/run/soju/admin` | Unix admin socket inside the container |
-| `SOJU_RUNTIME_DIR` | Compose-only | `./run/soju` | Host directory mounted at `/run/soju` |
+| `SOJU_RUNTIME_VOLUME` | Compose-only | `soju-runtime` | Named Docker volume shared read-only with soju-web |
 
 For production, terminate HTTPS at a reverse proxy and set `SOJU_WEB_COOKIE_SECURE=true`.
 
@@ -176,7 +180,26 @@ For production, terminate HTTPS at a reverse proxy and set `SOJU_WEB_COOKIE_SECU
 
 The container runs as UID/GID 1000, drops all Linux capabilities, supports a read-only root filesystem and needs no Docker socket. The login cookie is HTTP-only, SameSite=Strict and HMAC-authenticated. Administrative forms carry HMAC-backed CSRF tokens. Security headers include CSP, frame denial, no-sniff and no-referrer policy.
 
-The admin socket is powerful by design. Mount only the soju runtime directory needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network/channel operations and credential resets require explicit confirmation where appropriate.
+The admin socket is powerful by design. Mount only the `soju-runtime` volume needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network/channel/user operations and credential changes require explicit confirmation where appropriate.
+
+## M10 qualification
+
+The normal CI continues to require:
+
+```text
+gofmt
+go test ./...
+go vet ./...
+Compose validation
+amd64 image build/runtime
+arm64 image build/runtime
+non-root UID/GID
+health endpoint
+```
+
+M10 also adds a separate Integration workflow. It checks out `Ploos-AS/soju`, builds both images from source, creates a real soju administrator, starts soju with a shared Unix-socket volume, starts soju-web with that volume read-only, signs into the WebAdmin, and verifies that the dashboard can read real admin-socket state including the created soju user.
+
+A `v0.1.0` tag should only be created after both CI and Integration are green on the same main HEAD and the companion `Ploos-AS/soju` admin-socket CI is green.
 
 ## Development
 
