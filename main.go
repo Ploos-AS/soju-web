@@ -42,6 +42,10 @@ func main() {
 	mux.HandleFunc("POST /login", a.login)
 	mux.HandleFunc("POST /logout", a.logout)
 	mux.HandleFunc("GET /", a.requireAuth(a.dashboard))
+	mux.HandleFunc("GET /users", a.requireAuth(a.usersPage))
+	mux.HandleFunc("POST /users/create", a.requireAuth(a.createUser))
+	mux.HandleFunc("POST /users/update", a.requireAuth(a.updateUser))
+	mux.HandleFunc("POST /users/password", a.requireAuth(a.changeUserPassword))
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -215,4 +219,4 @@ const baseCSS = `body{font-family:system-ui,sans-serif;background:#111827;color:
 
 const loginTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web login</title><style>` + baseCSS + `</style></head><body><main><section><h1>soju-web</h1><p class="muted">Administrative web interface for soju.</p>{{if .Error}}<p class="bad">Invalid credentials.</p>{{end}}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section></main></body></html>`
 
-const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + `</style></head><body><main><header><div><h1>soju-web</h1><p class="muted">WebAdmin foundation</p></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>soju backend</h2><p>Address: <code>{{.SojuAddress}}</code></p><p>Status: {{if eq .Status "online"}}<strong class="ok">online</strong>{{else}}<strong class="bad">offline</strong>{{end}}</p><p>TCP latency: {{.Latency}}</p></section><section><h2>M0 scope</h2><p>Authentication, dashboard, backend reachability, hardened container packaging and CI. User/config administration will be added through a dedicated soju integration layer rather than Docker socket access.</p></section></main></body></html>`
+const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}</style></head><body><main><header><div><h1>soju-web</h1><p class="muted">Go WebAdmin for soju</p><nav><a href="/">Dashboard</a><a href="/users">Users</a></nav></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>soju backend</h2><p>Address: <code>{{.SojuAddress}}</code></p><p>Status: {{if eq .Status "online"}}<strong class="ok">online</strong>{{else}}<strong class="bad">offline</strong>{{end}}</p><p>TCP latency: {{.Latency}}</p></section><section><h2>M1</h2><p>User administration is available through soju's Unix admin interface. No Docker socket and no direct database access are required.</p></section></main></body></html>`
