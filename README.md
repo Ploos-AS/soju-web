@@ -6,20 +6,19 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added user administration, M2 added per-user IRC network administration, and M3 adds saved-channel/autojoin administration through soju's native Unix admin interface:
+M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, and M4 adds network authentication plus a real operational dashboard through soju's native Unix admin interface:
 
 - authenticated WebAdmin login
-- dashboard with soju backend reachability and TCP latency
-- `/users` administration page
-- user status, creation, enable/disable, admin role and password changes
-- `/networks` administration page scoped to a selected soju user
-- network status, create, update, enable/disable and delete
-- `/channels` administration page scoped to a selected user and network
-- channel status via `user run <user> channel status -network <network>`
-- create saved channels/autojoin entries
-- update detached state and detach/reattach filters
-- configure detach-after durations
-- delete saved channels with explicit confirmation
+- dashboard health for the IRC listener and Unix admin socket
+- dashboard TCP latency
+- authoritative `server status` statistics: active/stored users, downstreams, upstreams, networks and channels
+- `/users` administration: status, create, enable/disable, admin role and password changes
+- `/networks` administration: status, create, update, enable/disable and delete
+- `/channels` administration: saved-channel/autojoin status, create, update and delete
+- detached-channel policy: relay-detached, reattach-on, detach-on and detach-after
+- `/security` administration scoped to a selected user and network
+- SASL PLAIN status, credential setup and reset
+- CertFP status and certificate generation with Ed25519, ECDSA or RSA-3072
 - CSRF protection for administrative POST actions
 - health endpoint at `/healthz`
 - pure-Go application with no runtime framework dependencies
@@ -28,11 +27,11 @@ M0 established the hardened WebAdmin foundation. M1 added user administration, M
 - amd64 and arm64 CI/release pipeline
 - GHCR publication with SBOM, provenance and build attestation
 
-IRC chat remains intentionally out of scope. `soju-web` also does not mount the Docker socket and does not modify the soju database directly.
+IRC chat remains intentionally out of scope. `soju-web` does not mount the Docker socket and does not modify the soju database directly.
 
 ## soju admin socket
 
-M1-M3 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M4 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
 Add this listener to the soju configuration:
 
@@ -57,6 +56,23 @@ volumes:
 ```
 
 If the projects live in different directories, set `SOJU_RUNTIME_DIR` in the soju-web `.env` to the same absolute host directory used by soju.
+
+## Dashboard
+
+The dashboard combines two independent health signals:
+
+- TCP reachability and latency to the configured soju IRC listener
+- successful access to the native admin socket
+
+For statistics it executes soju's native `server status` command. The values shown are therefore produced by soju itself rather than inferred from WebAdmin state:
+
+```text
+active/stored users
+connected downstreams
+connected upstreams
+stored networks
+stored channels
+```
 
 ## Network addresses
 
@@ -83,7 +99,11 @@ M3 targets a selected user and network. Status uses soju's `-network` selector. 
 
 The WebAdmin exposes soju's saved-channel settings for detached state, relay-detached, reattach-on, detach-on and detach-after. Supported filter values are `default`, `none`, `highlight` and `message`; durations follow Go/soju duration syntax such as `300s` or `22h30m`.
 
-Creating a saved channel causes soju to join it when the selected network is connected. Deleting it removes the saved channel and parts it when currently joined, following upstream behavior.
+## SASL and CertFP
+
+M4 exposes soju's native network authentication commands. SASL PLAIN credentials are sent over the local Unix admin socket directly to soju and are never stored by soju-web. Reset requires an explicit `reset` confirmation.
+
+CertFP generation uses soju itself to generate and store the certificate/key pair for the selected network. The UI offers Ed25519 by default, ECDSA, and RSA-3072.
 
 ## Quick start
 
@@ -120,7 +140,7 @@ For production, terminate HTTPS at a reverse proxy and set `SOJU_WEB_COOKIE_SECU
 
 The container runs as UID/GID 1000, drops all Linux capabilities, supports a read-only root filesystem and needs no Docker socket. The login cookie is HTTP-only, SameSite=Strict and HMAC-authenticated. Administrative forms carry HMAC-backed CSRF tokens. Security headers include CSP, frame denial, no-sniff and no-referrer policy.
 
-The admin socket is powerful by design. Mount only the soju runtime directory needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network and channel deletion requires both an authenticated session, a valid CSRF token and an explicit `delete` confirmation value.
+The admin socket is powerful by design. Mount only the soju runtime directory needed for the socket, keep it read-only in soju-web, and do not expose the socket over TCP. Destructive network/channel operations and credential resets require explicit confirmation where appropriate.
 
 ## Development
 
