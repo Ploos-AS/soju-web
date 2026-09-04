@@ -10,6 +10,9 @@ func TestMakeUserRowsEscapesUsername(t *testing.T) {
 	if rows[0].ManageURL != "/users?manage=alice+smith#manage-user" {
 		t.Fatalf("unexpected user manage URL: %q", rows[0].ManageURL)
 	}
+	if rows[0].DeleteURL != "/users/delete?username=alice+smith" {
+		t.Fatalf("unexpected user delete URL: %q", rows[0].DeleteURL)
+	}
 }
 
 func TestMakeNetworkRowsPreservesContext(t *testing.T) {
