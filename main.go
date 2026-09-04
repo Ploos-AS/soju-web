@@ -17,11 +17,6 @@ import (
 	"time"
 )
 
-var (
-	version  = "dev"
-	revision = "unknown"
-)
-
 type config struct {
 	ListenAddr    string
 	AdminUser     string
@@ -31,23 +26,29 @@ type config struct {
 	CookieSecure  bool
 }
 
-type app struct{ cfg config }
+type app struct {
+	cfg config
+}
 
-type pageData struct {
-	User           string
-	SojuAddress    string
-	SojuReachable  bool
-	SojuLatency    string
-	SojuError      string
-	AdminReachable bool
-	AdminError     string
-	Stats          sojuStats
-	StatsError     string
-	Users          userOverview
-	UsersError     string
-	Alerts         []string
-	Version        string
-	Revision       string
+type dashboardData struct {
+	Status        string
+	Latency       string
+	SojuAddress   string
+	AdminStatus   string
+	StatsError    string
+	ActiveUsers   int
+	StoredUsers   int
+	Downstreams   int
+	Upstreams     int
+	Networks      int
+	Channels      int
+	DisabledUsers int
+	AdminUsers    int
+	UserLines     []string
+	Attention     []string
+	RawStatsLine  string
+	Version       string
+	Revision      string
 }
 
 func main() {
@@ -55,6 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	a := &app{cfg: cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.healthz)
@@ -154,15 +156,32 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?error=1", http.StatusSeeOther)
 		return
 	}
-	exp := time.Now().Add(12 * time.Hour).Unix()
-	payload := fmt.Sprintf("%s|%d", a.cfg.AdminUser, exp)
-	value := base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + a.sign(payload)
-	http.SetCookie(w, &http.Cookie{Name: "soju_web_session", Value: value, Path: "/", HttpOnly: true, Secure: a.cfg.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: 12 * 60 * 60})
+
+	expires := time.Now().Add(12 * time.Hour).Unix()
+	payload := fmt.Sprintf("%s|%d", a.cfg.AdminUser, expires)
+	value := payload + "|" + a.sign(payload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "soju_web_session",
+		Value:    base64.RawURLEncoding.EncodeToString([]byte(value)),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   a.cfg.CookieSecure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   12 * 60 * 60,
+	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (a *app) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "soju_web_session", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.cfg.CookieSecure, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "soju_web_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   a.cfg.CookieSecure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -171,31 +190,26 @@ func (a *app) authenticated(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	parts := strings.Split(c.Value, ".")
-	if len(parts) != 2 {
-		return false
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(parts[0])
+	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
 		return false
 	}
-	payload := string(decoded)
-	if subtle.ConstantTimeCompare([]byte(parts[1]), []byte(a.sign(payload))) != 1 {
+	parts := strings.Split(string(raw), "|")
+	if len(parts) != 3 || parts[0] != a.cfg.AdminUser {
 		return false
 	}
-	var user string
-	var exp int64
-	if _, err := fmt.Sscanf(payload, "%[^|]|%d", &user, &exp); err != nil {
-		pieces := strings.Split(payload, "|")
-		if len(pieces) != 2 {
-			return false
-		}
-		user = pieces[0]
-		if _, err := fmt.Sscan(pieces[1], &exp); err != nil {
-			return false
-		}
+	var expires int64
+	if _, err := fmt.Sscanf(parts[1], "%d", &expires); err != nil || time.Now().Unix() > expires {
+		return false
 	}
-	return user == a.cfg.AdminUser && time.Now().Unix() <= exp
+	payload := parts[0] + "|" + parts[1]
+	return hmac.Equal([]byte(a.sign(payload)), []byte(parts[2]))
+}
+
+func (a *app) sign(value string) string {
+	m := hmac.New(sha256.New, a.cfg.SessionSecret)
+	_, _ = m.Write([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
 func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -209,62 +223,63 @@ func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
-	data := pageData{User: a.cfg.AdminUser, SojuAddress: a.cfg.SojuAddress, Version: version, Revision: revision}
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", a.cfg.SojuAddress, 2*time.Second)
-	if err != nil {
-		data.SojuError = err.Error()
-	} else {
-		data.SojuReachable = true
-		data.SojuLatency = time.Since(start).Round(time.Millisecond).String()
+	data := dashboardData{
+		Status:      "offline",
+		Latency:     "—",
+		SojuAddress: a.cfg.SojuAddress,
+		AdminStatus: "offline",
+		Version:     version,
+		Revision:    revision,
+	}
+
+	started := time.Now()
+	if conn, err := net.DialTimeout("tcp", a.cfg.SojuAddress, 2*time.Second); err == nil {
+		data.Status = "online"
+		data.Latency = time.Since(started).Round(time.Millisecond).String()
 		_ = conn.Close()
 	}
-	ctx, cancel := contextWithTimeout(r, 4*time.Second)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	client := a.adminClient()
-	serverLines, serverErr := client.Run(ctx, "server", "status")
-	if serverErr != nil {
-		data.AdminError = serverErr.Error()
-		data.StatsError = serverErr.Error()
+	lines, err := a.adminClient().Run(ctx, "server", "status")
+	if err != nil {
+		data.StatsError = err.Error()
 	} else {
-		data.AdminReachable = true
-		data.Stats = parseSojuStats(serverLines)
+		data.AdminStatus = "online"
+		if len(lines) > 0 {
+			data.RawStatsLine = lines[0]
+			data.ActiveUsers, data.StoredUsers, data.Downstreams, data.Upstreams, data.Networks, data.Channels, err = parseServerStats(lines[0])
+			if err != nil {
+				data.StatsError = "unexpected server status format: " + lines[0]
+			}
+		}
+
+		userLines, userErr := a.adminClient().Run(ctx, "user", "status")
+		if userErr == nil {
+			s := summarizeUsers(userLines)
+			data.DisabledUsers = s.Disabled
+			data.AdminUsers = s.Admins
+			data.UserLines = s.Lines
+		} else if data.StatsError == "" {
+			data.StatsError = "user status: " + userErr.Error()
+		}
 	}
-	userLines, userErr := client.Run(ctx, "user", "status")
-	if userErr != nil {
-		data.UsersError = userErr.Error()
-	} else {
-		data.Users = parseUserOverview(userLines)
-	}
-	data.Alerts = buildAlerts(data.SojuReachable, data.AdminReachable, data.Stats, data.Users)
+
+	data.Attention = attentionMessages(data)
 	render(w, dashboardTemplate, data)
 }
 
-func contextWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), d)
-}
-
-func (a *app) sign(value string) string {
-	mac := hmac.New(sha256.New, a.cfg.SessionSecret)
-	_, _ = mac.Write([]byte(value))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func render(w http.ResponseWriter, body string, data any) {
-	t, err := template.New("page").Parse(body)
-	if err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-		return
-	}
+func render(w http.ResponseWriter, src string, data any) {
+	t := template.Must(template.New("page").Parse(src))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, data); err != nil {
-		log.Printf("template execute: %v", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -272,8 +287,9 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-const baseCSS = `body{font:16px system-ui;margin:0;background:#0b1220;color:#e5e7eb}main{max-width:1100px;margin:auto;padding:2rem}header{display:flex;justify-content:space-between;gap:1rem;align-items:center}section{background:#182235;padding:1.25rem;border-radius:12px;margin:1rem 0}input,button{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563;background:#111827;color:#fff}input{width:100%;box-sizing:border-box;margin:.4rem 0 1rem}button{cursor:pointer;background:#1d4ed8}code{color:#fbbf24}.ok{color:#86efac}.bad{color:#fca5a5}.muted{color:#9ca3af}a{color:#93c5fd}`
+const baseCSS = `body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}main{max-width:1000px;margin:6vh auto;padding:2rem}section{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:1.5rem;margin-bottom:1rem}input,button{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563}input{width:100%;box-sizing:border-box;background:#111827;color:#fff;margin:.4rem 0 1rem}button{background:#f59e0b;color:#111827;font-weight:700;cursor:pointer}.ok{color:#34d399}.bad{color:#f87171}.warn{color:#fbbf24}.muted{color:#9ca3af}header{display:flex;justify-content:space-between;align-items:center}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem}.stat{background:#111827;border-radius:10px;padding:1rem}.stat strong{font-size:1.8rem;display:block}pre{white-space:pre-wrap;background:#111827;padding:1rem;border-radius:8px;overflow:auto}`
 
-const loginTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + `main{max-width:420px;margin:8vh auto}</style></head><body><main><h1>soju-web</h1><section><form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>{{if .Error}}<p class="bad">Invalid credentials.</p>{{end}}<button type="submit">Sign in</button></form></section></main></body></html>`
+const loginTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web login</title><style>` + baseCSS + `</style></head><body><main><section><h1>soju-web</h1><p class="muted">Administrative web interface for soju.</p>{{if .Error}}<p class="bad">Invalid credentials.</p>{{end}}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section></main></body></html>`
 
-const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web dashboard</title><style>` + baseCSS + `.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem}.stat{background:#111827;padding:1rem;border-radius:8px}.stat strong{display:block;font-size:1.5rem}nav a{color:#fbbf24;margin-right:1rem}ul{line-height:1.6}</style></head><body><main><header><div><h1>soju-web</h1><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav><p>Signed in as <strong>{{.User}}</strong></p></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>Health</h2><p>IRC listener <code>{{.SojuAddress}}</code>: {{if .SojuReachable}}<span class="ok">reachable ({{.SojuLatency}})</span>{{else}}<span class="bad">unreachable</span>{{end}}</p>{{if .SojuError}}<p class="muted">{{.SojuError}}</p>{{end}}<p>Admin socket: {{if .AdminReachable}}<span class="ok">reachable</span>{{else}}<span class="bad">unreachable</span>{{end}}</p>{{if .AdminError}}<p class="muted">{{.AdminError}}</p>{{end}}</section><section><h2>soju status</h2>{{if .StatsError}}<p class="bad">{{.StatsError}}</p>{{else}}<div class="grid"><div class="stat"><span>Active users</span><strong>{{.Stats.ActiveUsers}}</strong></div><div class="stat"><span>Stored users</span><strong>{{.Stats.StoredUsers}}</strong></div><div class="stat"><span>Downstreams</span><strong>{{.Stats.Downstreams}}</strong></div><div class="stat"><span>Upstreams</span><strong>{{.Stats.Upstreams}}</strong></div><div class="stat"><span>Networks</span><strong>{{.Stats.Networks}}</strong></div><div class="stat"><span>Channels</span><strong>{{.Stats.Channels}}</strong></div></div>{{end}}</section><section><h2>User overview</h2>{{if .UsersError}}<p class="bad">{{.UsersError}}</p>{{else}}<div class="grid"><div class="stat"><span>Visible users</span><strong>{{.Users.Total}}</strong></div><div class="stat"><span>Admins</span><strong>{{.Users.Admins}}</strong></div><div class="stat"><span>Disabled</span><strong>{{.Users.Disabled}}</strong></div></div>{{end}}</section><section><h2>Attention needed</h2>{{if .Alerts}}<ul>{{range .Alerts}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="ok">No status-derived warnings.</p>{{end}}</section><section><h2>Build</h2><p>soju-web <code>{{.Version}}</code> · revision <code>{{.Revision}}</code></p><p class="muted">No IRC chat is exposed by this WebAdmin.</p></section></main></body></html>`
+const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}</style></head><body><main><header><div><h1>soju-web</h1><p class="muted">Go WebAdmin for soju · {{.Version}} · <code>{{.Revision}}</code></p><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>Health</h2><div class="stats"><div class="stat"><span>IRC listener</span><strong class="{{if eq .Status "online"}}ok{{else}}bad{{end}}">{{.Status}}</strong><small>{{.Latency}}</small></div><div class="stat"><span>Admin socket</span><strong class="{{if eq .AdminStatus "online"}}ok{{else}}bad{{end}}">{{.AdminStatus}}</strong></div></div><p class="muted">Backend: <code>{{.SojuAddress}}</code></p></section><section><h2>Server statistics</h2>{{if .StatsError}}<p class="bad">{{.StatsError}}</p>{{end}}<div class="stats"><div class="stat"><span>Users active / stored</span><strong>{{.ActiveUsers}} / {{.StoredUsers}}</strong></div><div class="stat"><span>Admins / disabled</span><strong>{{.AdminUsers}} / {{.DisabledUsers}}</strong></div><div class="stat"><span>Downstreams</span><strong>{{.Downstreams}}</strong></div><div class="stat"><span>Upstreams</span><strong>{{.Upstreams}}</strong></div><div class="stat"><span>Networks</span><strong>{{.Networks}}</strong></div><div class="stat"><span>Channels</span><strong>{{.Channels}}</strong></div></div>{{if .RawStatsLine}}<p class="muted"><code>{{.RawStatsLine}}</code></p>{{end}}</section><section><h2>Attention needed</h2>{{if .Attention}}<ul>{{range .Attention}}<li class="warn">{{.}}</li>{{end}}</ul>{{else}}<p class="ok">No operational warnings from the available soju status data.</p>{{end}}</section><section><h2>User overview</h2>{{if .UserLines}}<pre>{{range .UserLines}}{{.}}
+{{end}}</pre>{{else}}<p class="muted">No user status lines available.</p>{{end}}</section><section><h2>M5</h2><p>The dashboard now combines listener health, admin-socket health, authoritative soju server statistics, user state and derived operational warnings. IRC chat remains intentionally out of scope.</p></section></main></body></html>`
