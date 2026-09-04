@@ -1,0 +1,22 @@
+services:
+  soju-web:
+    image: ghcr.io/ploos-as/soju-web:latest
+    container_name: soju-web
+    restart: unless-stopped
+    environment:
+      SOJU_WEB_ADMIN_USER: ${SOJU_WEB_ADMIN_USER:-admin}
+      SOJU_WEB_ADMIN_PASSWORD: ${SOJU_WEB_ADMIN_PASSWORD:?set SOJU_WEB_ADMIN_PASSWORD}
+      SOJU_WEB_SESSION_SECRET: ${SOJU_WEB_SESSION_SECRET:?set SOJU_WEB_SESSION_SECRET}
+      SOJU_WEB_COOKIE_SECURE: ${SOJU_WEB_COOKIE_SECURE:-false}
+      SOJU_ADDRESS: ${SOJU_ADDRESS:-host.docker.internal:6667}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777

@@ -1,0 +1,4 @@
+.env
+soju-web
+*.log
+.DS_Store

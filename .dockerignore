@@ -1,0 +1,6 @@
+.git
+.github
+.env
+soju-web
+*.log
+README.md
