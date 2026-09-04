@@ -16,13 +16,13 @@ type userStatus struct {
 }
 
 type networkStatus struct {
-	Name      string
-	Address   string
-	State     string
+	Name        string
+	Address     string
+	State       string
 	ConnectedAs string
-	Channels  int
-	Detail    string
-	Raw       string
+	Channels    int
+	Detail      string
+	Raw         string
 }
 
 type channelStatus struct {
