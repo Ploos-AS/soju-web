@@ -15,7 +15,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${SOJU_RUNTIME_DIR:-./run/soju}:/run/soju:ro
+      - soju-runtime:/run/soju:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -23,3 +23,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  soju-runtime:
+    name: ${SOJU_RUNTIME_VOLUME:-soju-runtime}
