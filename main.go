@@ -31,18 +31,24 @@ type app struct {
 }
 
 type dashboardData struct {
-	Status       string
-	Latency      string
-	SojuAddress  string
-	AdminStatus  string
-	StatsError   string
-	ActiveUsers  int
-	StoredUsers  int
-	Downstreams  int
-	Upstreams    int
-	Networks     int
-	Channels     int
-	RawStatsLine string
+	Status        string
+	Latency       string
+	SojuAddress   string
+	AdminStatus   string
+	StatsError    string
+	ActiveUsers   int
+	StoredUsers   int
+	Downstreams   int
+	Upstreams     int
+	Networks      int
+	Channels      int
+	DisabledUsers int
+	AdminUsers    int
+	UserLines     []string
+	Attention     []string
+	RawStatsLine  string
+	Version       string
+	Revision      string
 }
 
 func main() {
@@ -83,7 +89,7 @@ func main() {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	log.Printf("soju-web listening on %s; soju backend=%s", cfg.ListenAddr, cfg.SojuAddress)
+	log.Printf("soju-web %s (%s) listening on %s; soju backend=%s", version, revision, cfg.ListenAddr, cfg.SojuAddress)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -220,6 +226,8 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		Latency:     "—",
 		SojuAddress: a.cfg.SojuAddress,
 		AdminStatus: "offline",
+		Version:     version,
+		Revision:    revision,
 	}
 
 	started := time.Now()
@@ -229,7 +237,7 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	lines, err := a.adminClient().Run(ctx, "server", "status")
 	if err != nil {
@@ -238,21 +246,24 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		data.AdminStatus = "online"
 		if len(lines) > 0 {
 			data.RawStatsLine = lines[0]
-			if _, err := fmt.Sscanf(
-				lines[0],
-				"%d/%d users, %d downstreams, %d upstreams, %d networks, %d channels",
-				&data.ActiveUsers,
-				&data.StoredUsers,
-				&data.Downstreams,
-				&data.Upstreams,
-				&data.Networks,
-				&data.Channels,
-			); err != nil {
+			data.ActiveUsers, data.StoredUsers, data.Downstreams, data.Upstreams, data.Networks, data.Channels, err = parseServerStats(lines[0])
+			if err != nil {
 				data.StatsError = "unexpected server status format: " + lines[0]
 			}
 		}
+
+		userLines, userErr := a.adminClient().Run(ctx, "user", "status")
+		if userErr == nil {
+			s := summarizeUsers(userLines)
+			data.DisabledUsers = s.Disabled
+			data.AdminUsers = s.Admins
+			data.UserLines = s.Lines
+		} else if data.StatsError == "" {
+			data.StatsError = "user status: " + userErr.Error()
+		}
 	}
 
+	data.Attention = attentionMessages(data)
 	render(w, dashboardTemplate, data)
 }
 
@@ -274,8 +285,9 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-const baseCSS = `body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}main{max-width:1000px;margin:6vh auto;padding:2rem}section{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:1.5rem;margin-bottom:1rem}input,button{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563}input{width:100%;box-sizing:border-box;background:#111827;color:#fff;margin:.4rem 0 1rem}button{background:#f59e0b;color:#111827;font-weight:700;cursor:pointer}.ok{color:#34d399}.bad{color:#f87171}.muted{color:#9ca3af}header{display:flex;justify-content:space-between;align-items:center}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem}.stat{background:#111827;border-radius:10px;padding:1rem}.stat strong{font-size:1.8rem;display:block}`
+const baseCSS = `body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}main{max-width:1000px;margin:6vh auto;padding:2rem}section{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:1.5rem;margin-bottom:1rem}input,button{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563}input{width:100%;box-sizing:border-box;background:#111827;color:#fff;margin:.4rem 0 1rem}button{background:#f59e0b;color:#111827;font-weight:700;cursor:pointer}.ok{color:#34d399}.bad{color:#f87171}.warn{color:#fbbf24}.muted{color:#9ca3af}header{display:flex;justify-content:space-between;align-items:center}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem}.stat{background:#111827;border-radius:10px;padding:1rem}.stat strong{font-size:1.8rem;display:block}pre{white-space:pre-wrap;background:#111827;padding:1rem;border-radius:8px;overflow:auto}`
 
 const loginTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web login</title><style>` + baseCSS + `</style></head><body><main><section><h1>soju-web</h1><p class="muted">Administrative web interface for soju.</p>{{if .Error}}<p class="bad">Invalid credentials.</p>{{end}}<form method="post" action="/login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section></main></body></html>`
 
-const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}</style></head><body><main><header><div><h1>soju-web</h1><p class="muted">Go WebAdmin for soju</p><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>Health</h2><div class="stats"><div class="stat"><span>IRC listener</span><strong class="{{if eq .Status "online"}}ok{{else}}bad{{end}}">{{.Status}}</strong><small>{{.Latency}}</small></div><div class="stat"><span>Admin socket</span><strong class="{{if eq .AdminStatus "online"}}ok{{else}}bad{{end}}">{{.AdminStatus}}</strong></div></div><p class="muted">Backend: <code>{{.SojuAddress}}</code></p></section><section><h2>Server statistics</h2>{{if .StatsError}}<p class="bad">{{.StatsError}}</p>{{end}}<div class="stats"><div class="stat"><span>Users active / stored</span><strong>{{.ActiveUsers}} / {{.StoredUsers}}</strong></div><div class="stat"><span>Downstreams</span><strong>{{.Downstreams}}</strong></div><div class="stat"><span>Upstreams</span><strong>{{.Upstreams}}</strong></div><div class="stat"><span>Networks</span><strong>{{.Networks}}</strong></div><div class="stat"><span>Channels</span><strong>{{.Channels}}</strong></div></div>{{if .RawStatsLine}}<p class="muted"><code>{{.RawStatsLine}}</code></p>{{end}}</section><section><h2>M4</h2><p>User, network, channel, SASL and CertFP administration are available through soju's Unix admin interface. IRC chat remains intentionally out of scope.</p></section></main></body></html>`
+const dashboardTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}</style></head><body><main><header><div><h1>soju-web</h1><p class="muted">Go WebAdmin for soju · {{.Version}} · <code>{{.Revision}}</code></p><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav></div><form method="post" action="/logout"><button type="submit">Sign out</button></form></header><section><h2>Health</h2><div class="stats"><div class="stat"><span>IRC listener</span><strong class="{{if eq .Status "online"}}ok{{else}}bad{{end}}">{{.Status}}</strong><small>{{.Latency}}</small></div><div class="stat"><span>Admin socket</span><strong class="{{if eq .AdminStatus "online"}}ok{{else}}bad{{end}}">{{.AdminStatus}}</strong></div></div><p class="muted">Backend: <code>{{.SojuAddress}}</code></p></section><section><h2>Server statistics</h2>{{if .StatsError}}<p class="bad">{{.StatsError}}</p>{{end}}<div class="stats"><div class="stat"><span>Users active / stored</span><strong>{{.ActiveUsers}} / {{.StoredUsers}}</strong></div><div class="stat"><span>Admins / disabled</span><strong>{{.AdminUsers}} / {{.DisabledUsers}}</strong></div><div class="stat"><span>Downstreams</span><strong>{{.Downstreams}}</strong></div><div class="stat"><span>Upstreams</span><strong>{{.Upstreams}}</strong></div><div class="stat"><span>Networks</span><strong>{{.Networks}}</strong></div><div class="stat"><span>Channels</span><strong>{{.Channels}}</strong></div></div>{{if .RawStatsLine}}<p class="muted"><code>{{.RawStatsLine}}</code></p>{{end}}</section><section><h2>Attention needed</h2>{{if .Attention}}<ul>{{range .Attention}}<li class="warn">{{.}}</li>{{end}}</ul>{{else}}<p class="ok">No operational warnings from the available soju status data.</p>{{end}}</section><section><h2>User overview</h2>{{if .UserLines}}<pre>{{range .UserLines}}{{.}}
+{{end}}</pre>{{else}}<p class="muted">No user status lines available.</p>{{end}}</section><section><h2>M5</h2><p>The dashboard now combines listener health, admin-socket health, authoritative soju server statistics, user state and derived operational warnings. IRC chat remains intentionally out of scope.</p></section></main></body></html>`
