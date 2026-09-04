@@ -12,6 +12,8 @@ type securityPageData struct {
 	CSRF        string
 	User        string
 	Network     string
+	NetworksURL string
+	ChannelsURL string
 	SASLLines   []string
 	CertFPLines []string
 	SASLError   string
@@ -28,7 +30,11 @@ func (a *app) securityPage(w http.ResponseWriter, r *http.Request) {
 		Network: network,
 		Notice:  securityNoticeText(r.URL.Query().Get("ok")),
 	}
+	if username != "" {
+		data.NetworksURL = pageURL("/networks", url.Values{"user": {username}})
+	}
 	if username != "" && network != "" {
+		data.ChannelsURL = pageURL("/channels", url.Values{"user": {username}, "network": {network}})
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		data.SASLLines, data.SASLError = runStatus(a, ctx, username, "sasl", "status", "-network", network)
@@ -134,6 +140,6 @@ func securityNoticeText(v string) string {
 	}
 }
 
-const securityTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Security · soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}pre{white-space:pre-wrap;background:#111827;padding:1rem;border-radius:8px}select{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563;background:#111827;color:#fff;margin:.4rem 0 1rem;width:100%}</style></head><body><main><header><div><h1>Network security</h1><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav></div><form method="post" action="/logout"><button>Sign out</button></form></header><section><form method="get"><label>soju user<input name="user" value="{{.User}}" required></label><label>Network<input name="network" value="{{.Network}}" required></label><button>Load security status</button></form></section>{{if .Notice}}<section><p class="ok">{{.Notice}}</p></section>{{end}}{{if and .User .Network}}<section><h2>SASL status</h2>{{if .SASLError}}<p class="bad">{{.SASLError}}</p>{{else}}<pre>{{range .SASLLines}}{{.}}
+const securityTemplate = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Security · soju-web</title><style>` + baseCSS + ` nav a{color:#fbbf24;margin-right:1rem}pre{white-space:pre-wrap;background:#111827;padding:1rem;border-radius:8px}.context a{color:#fbbf24;margin-right:.75rem}select{font:inherit;padding:.7rem;border-radius:8px;border:1px solid #4b5563;background:#111827;color:#fff;margin:.4rem 0 1rem;width:100%}</style></head><body><main><header><div><h1>Network security</h1><nav><a href="/">Dashboard</a><a href="/users">Users</a><a href="/networks">Networks</a><a href="/channels">Channels</a><a href="/security">Security</a></nav></div><form method="post" action="/logout"><button>Sign out</button></form></header><section><form method="get"><label>soju user<input name="user" value="{{.User}}" required></label><label>Network<input name="network" value="{{.Network}}" required></label><button>Load security status</button></form></section>{{if .Notice}}<section><p class="ok">{{.Notice}}</p></section>{{end}}{{if and .User .Network}}<section><p class="muted context"><a href="{{.NetworksURL}}">← Networks</a><a href="{{.ChannelsURL}}">Channels →</a> User <code>{{.User}}</code>, network <code>{{.Network}}</code></p><h2>SASL status</h2>{{if .SASLError}}<p class="bad">{{.SASLError}}</p>{{else}}<pre>{{range .SASLLines}}{{.}}
 {{end}}</pre>{{end}}<h3>Set SASL PLAIN</h3><form method="post" action="/security/sasl/set"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="user" value="{{.User}}"><input type="hidden" name="network" value="{{.Network}}"><label>SASL username<input name="sasl_username" required></label><label>Password<input type="password" name="password" autocomplete="new-password" required></label><button>Save SASL credentials</button></form><h3>Reset SASL</h3><form method="post" action="/security/sasl/reset"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="user" value="{{.User}}"><input type="hidden" name="network" value="{{.Network}}"><label>Type <code>reset</code><input name="confirm" required></label><button>Reset SASL</button></form></section><section><h2>CertFP</h2>{{if .CertFPError}}<p class="muted">{{.CertFPError}}</p>{{else}}<pre>{{range .CertFPLines}}{{.}}
 {{end}}</pre>{{end}}<form method="post" action="/security/certfp/generate"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="user" value="{{.User}}"><input type="hidden" name="network" value="{{.Network}}"><label>Key type<select name="key_type"><option value="ed25519">Ed25519</option><option value="ecdsa">ECDSA</option><option value="rsa">RSA-3072</option></select></label><button>Generate certificate</button></form></section>{{end}}</main></body></html>`
