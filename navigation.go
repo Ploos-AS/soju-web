@@ -6,6 +6,7 @@ type userRow struct {
 	userStatus
 	NetworksURL string
 	ManageURL   string
+	DeleteURL   string
 }
 
 type networkRow struct {
@@ -27,6 +28,7 @@ func makeUserRows(users []userStatus) []userRow {
 			userStatus:  user,
 			NetworksURL: pageURL("/networks", url.Values{"user": {user.Username}}),
 			ManageURL:   pageURL("/users", url.Values{"manage": {user.Username}}) + "#manage-user",
+			DeleteURL:   pageURL("/users/delete", url.Values{"username": {user.Username}}),
 		})
 	}
 	return rows
