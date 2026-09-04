@@ -2,13 +2,19 @@
 ARG GO_VERSION=1.24
 ARG GO_ALPINE_VERSION=3.21
 ARG ALPINE_VERSION=3.22
+ARG VERSION=dev
+ARG REVISION=unknown
 
 FROM golang:${GO_VERSION}-alpine${GO_ALPINE_VERSION} AS build
+ARG VERSION
+ARG REVISION
 WORKDIR /src
 COPY go.mod ./
 COPY . .
 RUN CGO_ENABLED=0 go test ./... && \
-    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/soju-web .
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
+      -o /out/soju-web .
 
 FROM alpine:${ALPINE_VERSION}
 ARG VERSION=dev
