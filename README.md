@@ -6,12 +6,16 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, and M4 adds network authentication plus a real operational dashboard through soju's native Unix admin interface:
+M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, and M5 adds operational observability:
 
 - authenticated WebAdmin login
 - dashboard health for the IRC listener and Unix admin socket
 - dashboard TCP latency
 - authoritative `server status` statistics: active/stored users, downstreams, upstreams, networks and channels
+- user overview from native `user status`
+- disabled-user and administrator counts
+- operational `Attention needed` warnings derived from soju's own status data
+- embedded soju-web build version and Git revision in the dashboard and startup log
 - `/users` administration: status, create, enable/disable, admin role and password changes
 - `/networks` administration: status, create, update, enable/disable and delete
 - `/channels` administration: saved-channel/autojoin status, create, update and delete
@@ -31,7 +35,7 @@ IRC chat remains intentionally out of scope. `soju-web` does not mount the Docke
 
 ## soju admin socket
 
-M1-M4 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M5 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
 Add this listener to the soju configuration:
 
@@ -59,12 +63,15 @@ If the projects live in different directories, set `SOJU_RUNTIME_DIR` in the soj
 
 ## Dashboard
 
-The dashboard combines two independent health signals:
+The dashboard combines independent health and status signals:
 
 - TCP reachability and latency to the configured soju IRC listener
 - successful access to the native admin socket
+- soju `server status`
+- soju `user status`
+- the soju-web build version and Git revision
 
-For statistics it executes soju's native `server status` command. The values shown are therefore produced by soju itself rather than inferred from WebAdmin state:
+The primary statistics are produced by soju itself:
 
 ```text
 active/stored users
@@ -73,6 +80,10 @@ connected upstreams
 stored networks
 stored channels
 ```
+
+M5 also derives a small `Attention needed` section. Examples include an unreachable IRC listener/admin socket, stored users that are not currently active, configured networks without a live upstream connection, and disabled user accounts. The configured-network warning explicitly includes disabled networks; soju reports those as stored networks without an upstream connection.
+
+The dashboard does not invent per-network state from counters. Detailed connected/disabled/disconnected state and last connection errors remain available on the per-user Networks page via soju's native `network status` output.
 
 ## Network addresses
 
@@ -170,7 +181,7 @@ Release images are published as:
 ghcr.io/ploos-as/soju-web
 ```
 
-The release workflow publishes `linux/amd64` and `linux/arm64` images with SBOM, provenance and GitHub build attestation.
+The release workflow publishes `linux/amd64` and `linux/arm64` images with SBOM, provenance and GitHub build attestation. The release build arguments are also embedded into the Go binary as the displayed version and revision.
 
 ## License
 
