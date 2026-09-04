@@ -90,7 +90,7 @@ jobs:
             if ! docker ps --filter "id=$cid" --format '{{.ID}}' | grep -q .; then
               break
             fi
-            if docker logs "$cid" 2>&1 | grep -q "soju-web listening"; then
+            if docker logs "$cid" 2>&1 | grep -q "listening on :8080"; then
               started=true
               break
             fi
