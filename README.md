@@ -6,7 +6,7 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, M5 operational observability, and M6 adds structured status views:
+M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, M5 operational observability, M6 structured status views, and M7 adds contextual drill-down navigation:
 
 - authenticated WebAdmin login
 - dashboard health for the IRC listener and Unix admin socket
@@ -19,6 +19,9 @@ M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3
 - structured Users table with role, enabled/disabled state, network count and network limit
 - structured Networks table with address, connected/disabled/disconnected badges, active nick and upstream detail/error
 - structured Channels table with joined/parted/disconnected and attached/detached state
+- contextual drill-down from Users to Networks, and from Networks to Channels or Security
+- back-links between Channels/Security and the selected user's Networks page
+- URL-escaped user/network context so drill-down does not require manually re-entering targets
 - `/users` administration: status, create, enable/disable, admin role and password changes
 - `/networks` administration: status, create, update, enable/disable and delete
 - `/channels` administration: saved-channel/autojoin status, create, update and delete
@@ -38,7 +41,7 @@ IRC chat remains intentionally out of scope. `soju-web` does not mount the Docke
 
 ## soju admin socket
 
-M1-M6 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M7 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
 Add this listener to the soju configuration:
 
@@ -93,6 +96,19 @@ M6 parses the stable human-readable status produced by the pinned soju admin com
 Users show username, administrator role, enabled/disabled state, configured network count and optional network limit. Networks show configured address, connected/disabled/disconnected state, connected nick when soju reports one, channel count for connected networks, and the last connection error/detail for disconnected networks. Channels show joined/parted/disconnected state plus detached status.
 
 The parsers are covered by focused tests using representative upstream status lines. If a future soju release changes the status format, the parser tests are expected to catch the compatibility change rather than silently inventing state.
+
+## Drill-down navigation
+
+M7 turns the structured tables into the primary navigation path:
+
+```text
+Users → Networks → Channels
+                 ↘ Security
+```
+
+Selecting a user on the Users page opens that user's Networks page directly. Each network row has direct actions for Channels and Security. Both target pages retain the selected user/network in their URLs and provide contextual links back to Networks and across to the sibling page.
+
+Navigation URLs are built with Go's `net/url` package and covered by tests, so user and network names are safely escaped instead of being concatenated into query strings manually.
 
 ## Network addresses
 
