@@ -6,7 +6,7 @@ This repository is a separate project from soju itself. It does not fork or bund
 
 ## Current scope
 
-M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, and M5 adds operational observability:
+M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3 channels/autojoin, M4 network authentication and server statistics, M5 operational observability, and M6 adds structured status views:
 
 - authenticated WebAdmin login
 - dashboard health for the IRC listener and Unix admin socket
@@ -16,6 +16,9 @@ M0 established the hardened WebAdmin foundation. M1 added users, M2 networks, M3
 - disabled-user and administrator counts
 - operational `Attention needed` warnings derived from soju's own status data
 - embedded soju-web build version and Git revision in the dashboard and startup log
+- structured Users table with role, enabled/disabled state, network count and network limit
+- structured Networks table with address, connected/disabled/disconnected badges, active nick and upstream detail/error
+- structured Channels table with joined/parted/disconnected and attached/detached state
 - `/users` administration: status, create, enable/disable, admin role and password changes
 - `/networks` administration: status, create, update, enable/disable and delete
 - `/channels` administration: saved-channel/autojoin status, create, update and delete
@@ -35,7 +38,7 @@ IRC chat remains intentionally out of scope. `soju-web` does not mount the Docke
 
 ## soju admin socket
 
-M1-M5 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
+M1-M6 use soju's native `unix+admin` listener, the same administrative interface used by `sojuctl`.
 
 Add this listener to the soju configuration:
 
@@ -83,7 +86,13 @@ stored channels
 
 M5 also derives a small `Attention needed` section. Examples include an unreachable IRC listener/admin socket, stored users that are not currently active, configured networks without a live upstream connection, and disabled user accounts. The configured-network warning explicitly includes disabled networks; soju reports those as stored networks without an upstream connection.
 
-The dashboard does not invent per-network state from counters. Detailed connected/disabled/disconnected state and last connection errors remain available on the per-user Networks page via soju's native `network status` output.
+## Structured status views
+
+M6 parses the stable human-readable status produced by the pinned soju admin commands into WebAdmin view models. The original command output is not used as the primary presentation anymore.
+
+Users show username, administrator role, enabled/disabled state, configured network count and optional network limit. Networks show configured address, connected/disabled/disconnected state, connected nick when soju reports one, channel count for connected networks, and the last connection error/detail for disconnected networks. Channels show joined/parted/disconnected state plus detached status.
+
+The parsers are covered by focused tests using representative upstream status lines. If a future soju release changes the status format, the parser tests are expected to catch the compatibility change rather than silently inventing state.
 
 ## Network addresses
 
