@@ -5,12 +5,19 @@ import "net/url"
 type userRow struct {
 	userStatus
 	NetworksURL string
+	ManageURL   string
 }
 
 type networkRow struct {
 	networkStatus
 	ChannelsURL string
 	SecurityURL string
+	ManageURL   string
+}
+
+type channelRow struct {
+	channelStatus
+	ManageURL string
 }
 
 func makeUserRows(users []userStatus) []userRow {
@@ -19,6 +26,7 @@ func makeUserRows(users []userStatus) []userRow {
 		rows = append(rows, userRow{
 			userStatus:  user,
 			NetworksURL: pageURL("/networks", url.Values{"user": {user.Username}}),
+			ManageURL:   pageURL("/users", url.Values{"manage": {user.Username}}) + "#manage-user",
 		})
 	}
 	return rows
@@ -32,6 +40,22 @@ func makeNetworkRows(username string, networks []networkStatus) []networkRow {
 			networkStatus: network,
 			ChannelsURL:   pageURL("/channels", q),
 			SecurityURL:   pageURL("/security", q),
+			ManageURL:     pageURL("/networks", url.Values{"user": {username}, "manage": {network.Name}}) + "#manage-network",
+		})
+	}
+	return rows
+}
+
+func makeChannelRows(username, network string, channels []channelStatus) []channelRow {
+	rows := make([]channelRow, 0, len(channels))
+	for _, channel := range channels {
+		rows = append(rows, channelRow{
+			channelStatus: channel,
+			ManageURL: pageURL("/channels", url.Values{
+				"user":    {username},
+				"network": {network},
+				"manage":  {channel.Name},
+			}) + "#manage-channel",
 		})
 	}
 	return rows
