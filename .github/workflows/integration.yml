@@ -13,12 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out soju-web
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check out Ploos-AS soju packaging
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Ploos-AS/soju
+          ref: 5ba37fb3110375f5efc35ad59dc2e2a91eb33fe1
           path: upstream-soju
 
       - name: Build soju
