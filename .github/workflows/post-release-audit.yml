@@ -1,0 +1,154 @@
+name: Post-release audit
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to audit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+env:
+  IMAGE_NAME: ghcr.io/ploos-as/soju-web
+
+jobs:
+  audit:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Select release bound to producer commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          PRODUCER_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          tag="$INPUT_TAG"
+          if [[ -z "$tag" ]]; then
+            while IFS= read -r candidate; do
+              [[ -n "$candidate" ]] || continue
+              commit="$(git rev-list -n 1 "$candidate" 2>/dev/null || true)"
+              if [[ "$commit" == "$PRODUCER_SHA" ]]; then
+                tag="$candidate"
+                break
+              fi
+            done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft == false) | .tagName')
+          fi
+          [[ -n "$tag" ]]
+          sh scripts/verify-release-ref.sh "$tag" "$(git rev-list -n 1 "$tag")"
+          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease)"
+          jq -e --arg tag "$tag" '.tagName == $tag and .isDraft == false' <<<"$release_json" >/dev/null
+          if [[ -n "$PRODUCER_SHA" ]]; then
+            test "$(git rev-list -n 1 "$tag")" = "$PRODUCER_SHA"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve immutable release digest and verify platforms
+        id: image
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_tag="${IMAGE_NAME}:${TAG#v}"
+          docker buildx imagetools inspect --raw "$image_tag" > /tmp/manifest.json
+          jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64")' /tmp/manifest.json >/dev/null
+          jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' /tmp/manifest.json >/dev/null
+          digest="$(docker buildx imagetools inspect "$image_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          sh scripts/verify-exact-digest-runtime.sh "$IMAGE_NAME" "$digest" >/dev/null
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+
+      - name: Verify exact-digest signature
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github.com/Ploos-AS/soju-web/.github/workflows/release.yml@refs/tags/v.*$' \
+            "${IMAGE_NAME}@${IMAGE_DIGEST}" > /tmp/cosign-verification.json
+          jq -e 'length > 0' /tmp/cosign-verification.json >/dev/null
+
+      - name: Verify immutable labels and runtime after release
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_ref="${IMAGE_NAME}@${IMAGE_DIGEST}"
+          docker pull --platform linux/amd64 "$image_ref"
+          revision="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          version="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+          test "$revision" = "$(git rev-list -n 1 "$TAG")"
+          test "$version" = "$TAG"
+          test "$(docker run --rm --platform linux/amd64 --entrypoint id "$image_ref" -u)" = "1000"
+          test "$(docker run --rm --platform linux/amd64 --entrypoint id "$image_ref" -g)" = "1000"
+          cid=$(docker run -d --rm --platform linux/amd64 \
+            -e SOJU_WEB_ADMIN_PASSWORD=post-release-audit-password \
+            -e SOJU_WEB_SESSION_SECRET=post-release-audit-session-secret-0123456789 \
+            -p 127.0.0.1:18081:8080 "$image_ref")
+          trap 'docker logs "$cid" 2>&1 || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          healthy=false
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18081/healthz | grep -qx ok; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          test "$healthy" = true
+          docker rm -f "$cid"
+          trap - EXIT
+
+      - name: Record post-release audit summary
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          {
+            echo '### M11.5 post-release audit'
+            echo
+            echo "- release: $TAG"
+            echo "- immutable digest: $IMAGE_DIGEST"
+            echo '- GitHub Release/tag/commit binding: verified'
+            echo '- linux/amd64 + linux/arm64 manifest coverage: verified'
+            echo '- Cosign keyless signature and release workflow OIDC identity: verified'
+            echo '- OCI revision/version labels: verified'
+            echo '- non-root UID/GID 1000: verified'
+            echo '- exact-digest post-publication /healthz runtime: verified'
+          } >> "$GITHUB_STEP_SUMMARY"
