@@ -83,11 +83,20 @@ jobs:
         run: |
           set -euo pipefail
           image_tag="${IMAGE_NAME}:${TAG#v}"
-          docker buildx imagetools inspect --raw "$image_tag" > /tmp/manifest.json
+
+          docker manifest inspect "$image_tag" > /tmp/manifest.json
           jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64")' /tmp/manifest.json >/dev/null
           jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' /tmp/manifest.json >/dev/null
-          digest="$(docker buildx imagetools inspect "$image_tag" | awk '/^Digest:/ {print $2; exit}')"
-          test -n "$digest"
+
+          docker pull --platform linux/amd64 "$image_tag" >/dev/null
+          repo_digest="$(docker image inspect "$image_tag" --format '{{index .RepoDigests 0}}')"
+          digest="${repo_digest##*@}"
+          case "$digest" in
+            sha256:[0-9a-f][0-9a-f]*) ;;
+            *) echo "invalid resolved image digest: $digest" >&2; exit 1 ;;
+          esac
+          test "${#digest}" -eq 71
+
           sh scripts/verify-exact-digest-runtime.sh "$IMAGE_NAME" "$digest" >/dev/null
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
