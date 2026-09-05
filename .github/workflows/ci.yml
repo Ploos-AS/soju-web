@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -29,6 +31,20 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Verify release-ref policy
+        run: |
+          git tag m11.2-test "$GITHUB_SHA"
+          if sh scripts/verify-release-ref.sh m11.2-test "$GITHUB_SHA"; then
+            echo "non-SemVer tag unexpectedly accepted" >&2
+            exit 1
+          fi
+          git tag v0.0.0-m11.2 "$GITHUB_SHA"
+          sh scripts/verify-release-ref.sh v0.0.0-m11.2 "$GITHUB_SHA"
+          if sh scripts/verify-release-ref.sh v0.0.0-m11.2 0000000000000000000000000000000000000000; then
+            echo "tag/commit mismatch unexpectedly accepted" >&2
+            exit 1
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
