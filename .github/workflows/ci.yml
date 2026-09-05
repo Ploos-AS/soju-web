@@ -46,6 +46,18 @@ jobs:
             exit 1
           fi
 
+          historical_sha="$(git rev-parse HEAD~1)"
+          git tag v0.0.0-m11.5b "$historical_sha"
+          if sh scripts/verify-release-ref.sh v0.0.0-m11.5b "$historical_sha"; then
+            echo "historical release unexpectedly accepted in strict mode" >&2
+            exit 1
+          fi
+          sh scripts/verify-release-ref.sh v0.0.0-m11.5b "$historical_sha" --allow-head-mismatch-for-audit
+          if sh scripts/verify-release-ref.sh v0.0.0-m11.5b "$historical_sha" --unknown-mode; then
+            echo "unknown verification mode unexpectedly accepted" >&2
+            exit 1
+          fi
+
       - name: Verify exact-digest policy
         run: |
           digest="sha256:$(printf '%064d' 0)"
