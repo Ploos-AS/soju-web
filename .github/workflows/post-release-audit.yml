@@ -52,13 +52,15 @@ jobs:
             done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft == false) | .tagName')
           fi
           [[ -n "$tag" ]]
-          sh scripts/verify-release-ref.sh "$tag" "$(git rev-list -n 1 "$tag")"
+          tag_commit="$(git rev-list -n 1 "$tag")"
+          sh scripts/verify-release-ref.sh "$tag" "$tag_commit"
           release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease)"
           jq -e --arg tag "$tag" '.tagName == $tag and .isDraft == false' <<<"$release_json" >/dev/null
           if [[ -n "$PRODUCER_SHA" ]]; then
-            test "$(git rev-list -n 1 "$tag")" = "$PRODUCER_SHA"
+            test "$tag_commit" = "$PRODUCER_SHA"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -84,7 +86,8 @@ jobs:
           docker buildx imagetools inspect --raw "$image_tag" > /tmp/manifest.json
           jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64")' /tmp/manifest.json >/dev/null
           jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' /tmp/manifest.json >/dev/null
-          digest="$(docker buildx imagetools inspect "$image_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          digest="$(docker buildx imagetools inspect "$image_tag" | awk '/^Digest:/ {print $2; exit}')"
+          test -n "$digest"
           sh scripts/verify-exact-digest-runtime.sh "$IMAGE_NAME" "$digest" >/dev/null
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
@@ -107,6 +110,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -114,7 +118,7 @@ jobs:
           docker pull --platform linux/amd64 "$image_ref"
           revision="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
           version="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
-          test "$revision" = "$(git rev-list -n 1 "$TAG")"
+          test "$revision" = "$RELEASE_COMMIT"
           test "$version" = "$TAG"
           test "$(docker run --rm --platform linux/amd64 --entrypoint id "$image_ref" -u)" = "1000"
           test "$(docker run --rm --platform linux/amd64 --entrypoint id "$image_ref" -g)" = "1000"
