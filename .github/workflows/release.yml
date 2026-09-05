@@ -69,6 +69,42 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      - name: Qualify published image by exact digest
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -eu
+          case "$IMAGE_DIGEST" in
+            sha256:[0-9a-f][0-9a-f]*) ;;
+            *) echo "invalid published image digest: $IMAGE_DIGEST" >&2; exit 1 ;;
+          esac
+          test "${#IMAGE_DIGEST}" -eq 71
+          image_ref="${IMAGE_NAME}@${IMAGE_DIGEST}"
+          docker pull "$image_ref"
+          resolved="$(docker image inspect "$image_ref" --format '{{index .RepoDigests 0}}')"
+          test "$resolved" = "$image_ref"
+          revision="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          version="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+          test "$revision" = "$GITHUB_SHA"
+          test "$version" = "$GITHUB_REF_NAME"
+          test "$(docker run --rm --entrypoint id "$image_ref" -u)" = "1000"
+          test "$(docker run --rm --entrypoint id "$image_ref" -g)" = "1000"
+          cid=$(docker run -d --rm \
+            -e SOJU_WEB_ADMIN_PASSWORD=release-qualification-password \
+            -e SOJU_WEB_SESSION_SECRET=release-qualification-session-secret-0123456789 \
+            -p 127.0.0.1:18080:8080 "$image_ref")
+          trap 'docker logs "$cid" 2>&1 || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz | grep -qx ok; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          test "${healthy:-false}" = true
+          docker rm -f "$cid"
+          trap - EXIT
+
       - name: Attest image
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:

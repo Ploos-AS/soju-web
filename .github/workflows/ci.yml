@@ -46,6 +46,17 @@ jobs:
             exit 1
           fi
 
+      - name: Verify exact-digest policy
+        run: |
+          digest="sha256:$(printf '%064d' 0)"
+          test "$(sh scripts/verify-exact-digest-runtime.sh ghcr.io/ploos-as/soju-web "$digest")" = "ghcr.io/ploos-as/soju-web@$digest"
+          for invalid in latest v0.1.0 sha256:deadbeef "sha256:$(printf '%064d' 0)X"; do
+            if sh scripts/verify-exact-digest-runtime.sh ghcr.io/ploos-as/soju-web "$invalid"; then
+              echo "invalid digest unexpectedly accepted: $invalid" >&2
+              exit 1
+            fi
+          done
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
