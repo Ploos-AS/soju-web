@@ -112,6 +112,29 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+
+      - name: Sign exact release digest with GitHub OIDC
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -eu
+          test -n "$IMAGE_DIGEST"
+          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Verify keyless release signature
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -eu
+          test -n "$IMAGE_DIGEST"
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github.com/Ploos-AS/soju-web/.github/workflows/release.yml@refs/tags/v.*$' \
+            "${IMAGE_NAME}@${IMAGE_DIGEST}" > /tmp/cosign-verification.json
+          test -s /tmp/cosign-verification.json
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
