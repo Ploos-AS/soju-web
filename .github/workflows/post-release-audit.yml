@@ -97,14 +97,46 @@ jobs:
           set -euo pipefail
           ghcr_tag="${GHCR_IMAGE}:${TAG#v}"
           dockerhub_tag="${DOCKERHUB_IMAGE}:${TAG#v}"
-          for image_tag in "$ghcr_tag" "$dockerhub_tag"; do
-            docker manifest inspect "$image_tag" > /tmp/manifest.json
-            jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64")' /tmp/manifest.json >/dev/null
-            jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' /tmp/manifest.json >/dev/null
+
+          inspect_raw() {
+            image_tag="$1"
+            output="$2"
+            for attempt in 1 2 3 4 5 6; do
+              if docker buildx imagetools inspect --raw "$image_tag" > "$output"; then
+                return 0
+              fi
+              echo "registry metadata not ready for $image_tag (attempt $attempt/6)" >&2
+              sleep 10
+            done
+            echo "unable to inspect $image_tag after retries" >&2
+            return 1
+          }
+
+          inspect_raw "$ghcr_tag" /tmp/ghcr-manifest.json
+          inspect_raw "$dockerhub_tag" /tmp/dockerhub-manifest.json
+
+          for manifest in /tmp/ghcr-manifest.json /tmp/dockerhub-manifest.json; do
+            jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64")' "$manifest" >/dev/null
+            jq -e 'any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")' "$manifest" >/dev/null
           done
-          ghcr_digest="$(docker buildx imagetools inspect "$ghcr_tag" | awk '/^Digest:/ {print $2; exit}')"
-          dockerhub_digest="$(docker buildx imagetools inspect "$dockerhub_tag" | awk '/^Digest:/ {print $2; exit}')"
-          test -n "$ghcr_digest"
+
+          resolve_digest() {
+            image_tag="$1"
+            for attempt in 1 2 3 4 5 6; do
+              digest="$(docker buildx imagetools inspect "$image_tag" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')"
+              if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                printf '%s\n' "$digest"
+                return 0
+              fi
+              echo "registry digest not ready for $image_tag (attempt $attempt/6)" >&2
+              sleep 10
+            done
+            echo "unable to resolve digest for $image_tag after retries" >&2
+            return 1
+          }
+
+          ghcr_digest="$(resolve_digest "$ghcr_tag")"
+          dockerhub_digest="$(resolve_digest "$dockerhub_tag")"
           test "$dockerhub_digest" = "$ghcr_digest"
           sh scripts/verify-exact-digest-runtime.sh "$GHCR_IMAGE" "$ghcr_digest" >/dev/null
           sh scripts/verify-exact-digest-runtime.sh "$DOCKERHUB_IMAGE" "$dockerhub_digest" >/dev/null
@@ -155,13 +187,14 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           {
-            echo '### M12.1 dual-registry post-release audit'
+            echo '### M12.1a dual-registry post-release audit'
             echo
             echo "- release: $TAG"
             echo "- immutable digest: $IMAGE_DIGEST"
             echo '- GitHub Release/tag/commit binding: verified'
             echo '- GHCR + Docker Hub digest parity: verified'
             echo '- linux/amd64 + linux/arm64 manifest coverage in both registries: verified'
+            echo '- registry publication settling/retry policy: verified'
             echo '- Cosign keyless signatures in both registries: verified'
             echo '- OCI revision/version labels: verified'
             echo '- non-root UID/GID 1000: verified'
