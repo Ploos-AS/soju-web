@@ -12,7 +12,8 @@ permissions:
   attestations: write
 
 env:
-  IMAGE_NAME: ghcr.io/ploos-as/soju-web
+  GHCR_IMAGE: ghcr.io/ploos-as/soju-web
+  DOCKERHUB_IMAGE: ploos1/soju-web
 
 jobs:
   publish:
@@ -24,6 +25,15 @@ jobs:
 
       - name: Verify release tag and commit binding
         run: sh scripts/verify-release-ref.sh "$GITHUB_REF_NAME" "$GITHUB_SHA"
+
+      - name: Validate Docker Hub publication configuration
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -eu
+          test "$DOCKERHUB_USERNAME" = "ploos1"
+          test -n "$DOCKERHUB_TOKEN"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -38,11 +48,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
           flavor: |
             latest=auto
           tags: |
@@ -74,25 +92,24 @@ jobs:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -eu
-          case "$IMAGE_DIGEST" in
-            sha256:[0-9a-f][0-9a-f]*) ;;
-            *) echo "invalid published image digest: $IMAGE_DIGEST" >&2; exit 1 ;;
-          esac
-          test "${#IMAGE_DIGEST}" -eq 71
-          image_ref="${IMAGE_NAME}@${IMAGE_DIGEST}"
-          docker pull "$image_ref"
-          resolved="$(docker image inspect "$image_ref" --format '{{index .RepoDigests 0}}')"
-          test "$resolved" = "$image_ref"
-          revision="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
-          version="$(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+          ghcr_ref="$(sh scripts/verify-exact-digest-runtime.sh "$GHCR_IMAGE" "$IMAGE_DIGEST")"
+          dockerhub_ref="$(sh scripts/verify-exact-digest-runtime.sh "$DOCKERHUB_IMAGE" "$IMAGE_DIGEST")"
+          docker pull "$ghcr_ref"
+          ghcr_resolved="$(docker image inspect "$ghcr_ref" --format '{{index .RepoDigests 0}}')"
+          test "$ghcr_resolved" = "$ghcr_ref"
+          docker pull "$dockerhub_ref"
+          dockerhub_resolved="$(docker image inspect "$dockerhub_ref" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -F "${DOCKERHUB_IMAGE}@${IMAGE_DIGEST}" | head -n 1)"
+          test "$dockerhub_resolved" = "$dockerhub_ref"
+          revision="$(docker image inspect "$ghcr_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          version="$(docker image inspect "$ghcr_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
           test "$revision" = "$GITHUB_SHA"
           test "$version" = "$GITHUB_REF_NAME"
-          test "$(docker run --rm --entrypoint id "$image_ref" -u)" = "1000"
-          test "$(docker run --rm --entrypoint id "$image_ref" -g)" = "1000"
+          test "$(docker run --rm --entrypoint id "$ghcr_ref" -u)" = "1000"
+          test "$(docker run --rm --entrypoint id "$ghcr_ref" -g)" = "1000"
           cid=$(docker run -d --rm \
             -e SOJU_WEB_ADMIN_PASSWORD=release-qualification-password \
             -e SOJU_WEB_SESSION_SECRET=release-qualification-session-secret-0123456789 \
-            -p 127.0.0.1:18080:8080 "$image_ref")
+            -p 127.0.0.1:18080:8080 "$ghcr_ref")
           trap 'docker logs "$cid" 2>&1 || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/healthz | grep -qx ok; then
@@ -105,41 +122,50 @@ jobs:
           docker rm -f "$cid"
           trap - EXIT
 
-      - name: Attest image
+      - name: Attest GHCR image
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-name: ${{ env.IMAGE_NAME }}
+          subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
 
-      - name: Sign exact release digest with GitHub OIDC
+      - name: Sign exact release digests with GitHub OIDC
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -eu
           test -n "$IMAGE_DIGEST"
-          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          cosign sign --yes "${GHCR_IMAGE}@${IMAGE_DIGEST}"
+          cosign sign --yes "${DOCKERHUB_IMAGE}@${IMAGE_DIGEST}"
 
-      - name: Verify keyless release signature
+      - name: Verify keyless release signatures
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -eu
           test -n "$IMAGE_DIGEST"
-          cosign verify \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp '^https://github.com/Ploos-AS/soju-web/.github/workflows/release.yml@refs/tags/v.*$' \
-            "${IMAGE_NAME}@${IMAGE_DIGEST}" > /tmp/cosign-verification.json
-          test -s /tmp/cosign-verification.json
+          for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp '^https://github.com/Ploos-AS/soju-web/.github/workflows/release.yml@refs/tags/v.*$' \
+              "${image}@${IMAGE_DIGEST}" > /tmp/cosign-verification.json
+            test -s /tmp/cosign-verification.json
+          done
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --generate-notes \
-            --title "soju-web $GITHUB_REF_NAME"
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for $GITHUB_REF_NAME"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "soju-web $GITHUB_REF_NAME"
+          fi
